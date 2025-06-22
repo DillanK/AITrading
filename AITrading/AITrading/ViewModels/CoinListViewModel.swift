@@ -17,51 +17,71 @@ class CoinListViewModel: ObservableObject {
     @Published var isLoading: Bool = false
     @Published var errorMessage: String? = nil
 
-    private var container: ModelContainer? = nil
+    private var container: ModelContainer?
     private var cancellables = Set<AnyCancellable>()
 
-    init() {
-        do {
-            // ModelContainer를 안전하게 초기화
-            container = try ModelContainer(for: Coin.self)
-            loadMockData()
-            setupSearch()
-            return
-        } catch {
-            errorMessage = "Failed to initialize data container: \(error.localizedDescription)"
-            print("Initialization error: \(error)")
+    init(container: ModelContainer? = nil) {
+        self.container = container
+        setupSearch()
+        if container != nil {
+            loadData()
         }
     }
+    
+    func setContainer(_ container: ModelContainer) {
+        self.container = container
+        loadData()
+    }
 
-    // Load mock data
-    private func loadMockData() {
+    // Load data (Bithumb API 사용, 실패시 MockData)
+    private func loadData() {
         isLoading = true
+        errorMessage = nil
+        
         Task {
             do {
-                let mockCoins = MockCoinData.generateMockCoins()
-                await saveCoins(mockCoins)
-                coins = mockCoins.sorted { $0.isFavorite ? true : $1.isFavorite ? false : $0.symbol < $1.symbol }
+                print("🔄 Bithumb API에서 데이터를 가져오는 중...")
+                let fetchedCoins = try await BithumbAPI.shared.fetchTicker()
+                
+                coins = fetchedCoins.sorted { coin1, coin2 in
+                    if coin1.isFavorite && !coin2.isFavorite { return true }
+                    if !coin1.isFavorite && coin2.isFavorite { return false }
+                    return coin1.symbol < coin2.symbol
+                }
+                
                 isLoading = false
+                print("✅ Bithumb API 로드 완료: \(coins.count)개")
+                
             } catch {
-                errorMessage = "Unable to load coin list. Check your connection and try again."
+                print("⚠️ Bithumb API 실패, MockData 사용: \(error)")
+                
+                let mockCoins = MockCoinData.generateMockCoins()
+                coins = mockCoins.sorted { coin1, coin2 in
+                    if coin1.isFavorite && !coin2.isFavorite { return true }
+                    if !coin1.isFavorite && coin2.isFavorite { return false }
+                    return coin1.symbol < coin2.symbol
+                }
+                
                 isLoading = false
+                errorMessage = "실시간 데이터를 불러올 수 없어 임시 데이터를 표시합니다."
+                print("✅ MockData 로드 완료: \(coins.count)개")
             }
         }
     }
 
     // Save coins to SwiftData
-    private func saveCoins(_ coins: [Coin]) async {
+    private func saveCoins(_ coins: [Coin], context: ModelContext? = nil) async {
         guard let container = container else {
             errorMessage = "Failed to init ModelContainer"
             return
         }
         
         do {
-            let context = ModelContext(container)
+            let modelContext = context ?? ModelContext(container)
             for coin in coins {
-                context.insert(coin)
+                modelContext.insert(coin)
             }
-            try context.save()
+            try modelContext.save()
         } catch {
             print("Failed to save coins: \(error)")
             errorMessage = "Failed to save coins: \(error.localizedDescription)"
@@ -69,7 +89,7 @@ class CoinListViewModel: ObservableObject {
     }
 
     // Toggle favorite status
-    func toggleFavorite(for coin: Coin) {
+    func toggleFavorite(for coin: Coin, context: ModelContext? = nil) {
         guard let container = container else {
             errorMessage = "Failed to init ModelContainer"
             return
@@ -78,9 +98,9 @@ class CoinListViewModel: ObservableObject {
         coin.isFavorite.toggle()
         Task {
             do {
-                let context = ModelContext(container)
-                context.insert(coin)
-                try context.save()
+                let modelContext = context ?? ModelContext(container)
+                modelContext.insert(coin)
+                try modelContext.save()
                 coins.sort { $0.isFavorite ? true : $1.isFavorite ? false : $0.symbol < $1.symbol }
             } catch {
                 print("Failed to update favorite: \(error)")
@@ -110,6 +130,6 @@ class CoinListViewModel: ObservableObject {
     // Retry loading data
     func retryLoad() {
         errorMessage = nil
-        loadMockData()
+        loadData()
     }
 }

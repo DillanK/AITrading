@@ -11,14 +11,14 @@ import SwiftData
 @Model
 class Coin {
     var id: UUID = UUID()
-    var market: String // e.g., "KRW-BTC"
-    var symbol: String // e.g., "BTC"
-    var name: String // e.g., "Bitcoin"
-    var price: Double
-    var changePercent: Double
+    var market: String = "" // e.g., "KRW-BTC"
+    var symbol: String = "" // e.g., "BTC"
+    var name: String = "" // e.g., "Bitcoin"
+    var price: Double = 0.0
+    var changePercent: Double = 0.0
     var mfi: Double?
     var rsi: Double?
-    var isFavorite: Bool
+    var isFavorite: Bool = false
 
     init(market: String, symbol: String, name: String, price: Double, changePercent: Double, mfi: Double? = nil, rsi: Double? = nil, isFavorite: Bool = false) {
         self.market = market
