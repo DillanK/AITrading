@@ -194,24 +194,116 @@ struct CoinListView: View {
     // MARK: - Coins List Section
     private var coinsListSection: some View {
         VStack(spacing: 0) {
-            if viewModel.isLoading {
-                ProgressView()
+            // Header with refresh indicator
+            HStack {
+                Text("코인 목록")
+                    .font(.system(size: 18, weight: .semibold))
                     .foregroundColor(.white)
-                    .padding()
-            } else if let errorMessage = viewModel.errorMessage {
-                VStack {
-                    Text(errorMessage)
-                        .foregroundColor(.red)
-                    Button("Retry") {
-                        viewModel.retryLoad()
+                
+                Spacer()
+                
+                // Refresh indicator
+                if viewModel.isRefreshing {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                            .tint(.cyan)
+                        Text("업데이트 중...")
+                            .font(.system(size: 12))
+                            .foregroundColor(.cyan)
                     }
-                    .padding()
+                } else {
+                    Button(action: {
+                        viewModel.refresh()
+                    }) {
+                        Image(systemName: "arrow.clockwise")
+                            .foregroundColor(.cyan)
+                            .font(.title3)
+                    }
                 }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            
+            // Content based on state
+            if viewModel.isLoading && !viewModel.hasData {
+                // Initial loading state
+                VStack(spacing: 20) {
+                    ProgressView()
+                        .scaleEffect(1.5)
+                        .tint(.white)
+                    
+                    Text("코인 데이터를 불러오는 중...")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.white)
+                    
+                    Text("잠시만 기다려주세요")
+                        .font(.system(size: 14))
+                        .foregroundColor(.gray)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 80)
+            } else if let errorMessage = viewModel.errorMessage {
+                // Error state
+                VStack(spacing: 16) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                        .font(.title)
+                    
+                    Text(errorMessage)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.orange)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 20)
+                    
+                    Button(action: {
+                        viewModel.retryLoad()
+                    }) {
+                        HStack {
+                            Image(systemName: "arrow.clockwise")
+                            Text("다시 시도")
+                        }
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(Color.orange)
+                        .cornerRadius(8)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 40)
+            } else if viewModel.coins.isEmpty {
+                // Empty state
+                VStack(spacing: 16) {
+                    Image(systemName: "bitcoinsign.circle")
+                        .foregroundColor(.gray)
+                        .font(.system(size: 48))
+                    
+                    Text("코인 데이터가 없습니다")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.gray)
+                    
+                    Button(action: {
+                        viewModel.retryLoad()
+                    }) {
+                        Text("데이터 불러오기")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 10)
+                            .background(Color.purple)
+                            .cornerRadius(8)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 60)
             } else {
+                // Coins list
                 LazyVStack(spacing: 0) {
                     ForEach(viewModel.coins, id: \.id) { coin in
                         NavigationLink(destination: MainChartView(coin: coin)) {
-                            CoinRowView(coin: coin)
+                            CoinRowView(coin: coin, viewModel: viewModel)
                         }
                         .buttonStyle(PlainButtonStyle())
                     }
@@ -245,6 +337,7 @@ struct CoinListView: View {
 // MARK: - Coin Row View
 struct CoinRowView: View {
     let coin: Coin
+    let viewModel: CoinListViewModel
     
     var body: some View {
         HStack(spacing: 16) {
@@ -285,6 +378,18 @@ struct CoinRowView: View {
             
             // Mini Chart
             miniChartView
+            
+            // Favorite Button
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    viewModel.toggleFavorite(for: coin)
+                }
+            }) {
+                Image(systemName: coin.isFavorite ? "heart.fill" : "heart")
+                    .foregroundColor(coin.isFavorite ? .red : .gray)
+                    .font(.system(size: 16))
+            }
+            .buttonStyle(PlainButtonStyle())
             
             // Change Percentage
             HStack(spacing: 4) {

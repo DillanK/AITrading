@@ -20,7 +20,11 @@ struct AITradingApp: App {
             TradingStrategy.self,
             CandleDataModel.self,
         ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        let modelConfiguration = ModelConfiguration(
+            schema: schema, 
+            isStoredInMemoryOnly: false,
+            cloudKitDatabase: .private("iCloud.com.beakbig.ai.trading")
+        )
 
         do {
             return try ModelContainer(for: schema, configurations: [modelConfiguration])

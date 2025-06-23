@@ -39,7 +39,7 @@ class BacktestDataService: ObservableObject {
     @Published var progressMessage: String = ""
     @Published var errorMessage: String? = nil
     
-    private let baseURL = "https://api.bithumb.com/v1"
+    private let baseURL = "https://api.upbit.com/v1"
     private var modelContainer: ModelContainer?
     private var isCancelled: Bool = false
     
@@ -114,79 +114,6 @@ class BacktestDataService: ObservableObject {
         return isCancelled
     }
     
-    /// 배치 단위로 데이터 수집 (과거부터 현재 순서로)
-    private func collectDataInBatches(market: String, startDate: Date, endDate: Date) async {
-        let batchSize = 200 // API 최대 200개
-        let totalDays = Calendar.current.dateComponents([.day], from: startDate, to: endDate).day ?? 0
-        let totalBatches = max(1, (totalDays * 24 * 60) / batchSize) // 대략적인 배치 수
-        
-        var currentDate = startDate // 시작 날짜부터 순서대로 수집
-        var batchCount = 0
-        
-        print("📅 [COLLECTION] Start: \(startDate), End: \(endDate), Target batches: \(totalBatches)")
-        
-        // 순차적으로 데이터 수집 (concurrency 경고 방지)
-        while currentDate < endDate {
-            do {
-                await MainActor.run {
-                    self.progressMessage = "배치 \(batchCount + 1) 수집 중... (\(market))"
-                }
-                
-                // 현재 날짜부터 배치 크기만큼 다음 날짜 계산
-                let nextDate = min(Calendar.current.date(byAdding: .minute, value: batchSize, to: currentDate) ?? endDate, endDate)
-                
-                // 다음 날짜부터 역순으로 데이터 가져오기 (API 특성상)
-                let candles = try await fetchCandleBatch(market: market, to: nextDate, count: batchSize)
-                
-                if candles.isEmpty {
-                    print("⚠️ No more data available for \(market) at \(nextDate)")
-                    break
-                }
-                
-                // 현재 배치 범위에 해당하는 데이터만 필터링
-                let filteredCandles = candles.filter { candle in
-                    candle.timestamp >= currentDate && candle.timestamp < nextDate
-                }
-                
-                if !filteredCandles.isEmpty {
-                    await saveCandleData(filteredCandles)
-                    print("💾 [SAVED] \(filteredCandles.count)/\(candles.count) candles for period \(currentDate) ~ \(nextDate)")
-                } else {
-                    print("🔄 [SKIP] No data in target period \(currentDate) ~ \(nextDate)")
-                }
-                
-                // 다음 배치로 이동
-                currentDate = nextDate
-                batchCount += 1
-                
-                await MainActor.run {
-                    self.progress = min(1.0, Double(batchCount) / Double(totalBatches))
-                }
-                
-                // 취소 확인
-                let cancelled = await MainActor.run { self.isCancelled }
-                if cancelled {
-                    print("❌ [CANCELLED] Collection cancelled at batch \(batchCount)")
-                    break
-                }
-                
-                // API 제한 준수를 위한 지연
-                try await Task.sleep(nanoseconds: 100_000_000) // 0.1초 대기
-                
-            } catch {
-                print("❌ [ERROR] Batch collection failed: \(error)")
-                // 에러 발생시 잠시 대기 후 계속
-                do {
-                    try await Task.sleep(seconds: 1)
-                } catch {
-                    // 슬립 에러 무시
-                }
-            }
-        }
-        
-        print("🏁 [COMPLETE] Collection finished for \(market)")
-    }
-    
     /// 백그라운드용 데이터 수집 메서드 (container를 직접 받아서 사용)
     private func collectDataInBatchesBackground(market: String, startDate: Date, endDate: Date, container: ModelContainer?) async {
         guard let container = container else {
@@ -202,16 +129,13 @@ class BacktestDataService: ObservableObject {
         var batchCount = 0
         
         print("📅 [BACKGROUND] Start: \(startDate), End: \(endDate), Target batches: \(totalBatches)")
-        
+        var nextDate: Date = currentDate
         // 순차적으로 데이터 수집
-        while currentDate < endDate {
+        while nextDate <= endDate {
             do {
                 await MainActor.run {
                     self.progressMessage = "배치 \(batchCount + 1) 수집 중... (\(market))"
                 }
-                
-                // 현재 날짜부터 배치 크기만큼 다음 날짜 계산
-                let nextDate = min(Calendar.current.date(byAdding: .minute, value: batchSize, to: currentDate) ?? endDate, endDate)
                 
                 // 다음 날짜부터 역순으로 데이터 가져오기 (API 특성상)
                 let candleResponses = try await fetchCandleBatchBackground(market: market, to: nextDate, count: batchSize)
@@ -221,25 +145,20 @@ class BacktestDataService: ObservableObject {
                     break
                 }
                 
-                // 현재 배치 범위에 해당하는 CandleResponse만 필터링
-                let filteredResponses = candleResponses.filter { response in
-                    let dateFormatter = ISO8601DateFormatter()
-                    dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                    let date = dateFormatter.date(from: response.candleDateTimeKst) ?? Date()
-                    return date >= currentDate && date < nextDate
-                }
-                
-                if !filteredResponses.isEmpty {
+                // Asia/Seoul 타임존으로 날짜 비교를 위한 캘린더 설정
+                var seoulCalendar = Calendar.current
+                seoulCalendar.timeZone = TimeZone(identifier: "Asia/Seoul")!
+
+                if !candleResponses.isEmpty {
                     // MainActor에서 SwiftData 작업 수행 (actor isolation 준수)
                     await MainActor.run {
                         let context = ModelContext(container)
                         
-                        for response in filteredResponses {
+                        for response in candleResponses {
                             // CandleResponse를 CandleDataModel로 변환
-                            let dateFormatter = ISO8601DateFormatter()
-                            dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                            let date = dateFormatter.date(from: response.candleDateTimeKst) ?? Date()
-                            
+                            let date = response.candleDateTimeKst.dateToISO8601() ?? Date()
+                            nextDate = max(nextDate, date)
+                            debugPrint("Max Date : next \(nextDate)  date \(date) \(max(nextDate, date))")
                             let candle = CandleDataModel(
                                 market: response.market,
                                 timestamp: date,
@@ -251,27 +170,14 @@ class BacktestDataService: ObservableObject {
                                 accTradePrice: response.candleAccTradePrice
                             )
                             
-                            // 간단한 중복 체크 (동일한 market과 timestamp)
-                            do {
-                                let allCandles = try context.fetch(FetchDescriptor<CandleDataModel>())
-                                let isDuplicate = allCandles.contains { existing in
-                                    existing.market == candle.market &&
-                                    abs(existing.timestamp.timeIntervalSince(candle.timestamp)) < 60
-                                }
-                                
-                                if !isDuplicate {
-                                    context.insert(candle)
-                                }
-                            } catch {
-                                print("❌ [ERROR] Failed to check duplicates: \(error)")
-                                // 중복 체크 실패 시에도 데이터 삽입
-                                context.insert(candle)
-                            }
+                            // CloudKit unique constraint에 의존하여 직접 삽입
+                            // 중복 데이터는 CloudKit의 @Attribute(.unique)가 자동으로 처리
+                            context.insert(candle)
                         }
                         
                         do {
                             try context.save()
-                            print("💾 [SAVED] \(filteredResponses.count)/\(candleResponses.count) candles for period \(currentDate) ~ \(nextDate)")
+                            print("💾 [SAVED] \(candleResponses.count) candles for period \(currentDate) ~ \(nextDate)")
                         } catch {
                             print("❌ [ERROR] Failed to save candles: \(error)")
                         }
@@ -474,15 +380,9 @@ class BacktestDataService: ObservableObject {
             let context = ModelContext(container)
             
             for candle in candles {
-                // Check if candle already exists by trying to fetch all candles with the same market and timestamp
-                let allCandles = try context.fetch(FetchDescriptor<CandleDataModel>())
-                let existingCandle = allCandles.first { existing in
-                    existing.market == candle.market && existing.timestamp == candle.timestamp
-                }
-                
-                if existingCandle == nil {
-                    context.insert(candle)
-                }
+                // CloudKit unique constraint에 의존하여 직접 삽입
+                // 중복 데이터는 CloudKit의 @Attribute(.unique)가 자동으로 처리
+                context.insert(candle)
             }
             
             try context.save()
@@ -494,19 +394,28 @@ class BacktestDataService: ObservableObject {
         }
     }
     
+    @MainActor
     func getCandleData(for market: String, from startDate: Date, to endDate: Date) async -> [CandleDataModel] {
         guard let container = modelContainer else { return [] }
         
         do {
             let context = ModelContext(container)
             
-            let allCandles = try context.fetch(FetchDescriptor<CandleDataModel>())
-            var results = allCandles.filter { candle in
-                candle.market == market && candle.timestamp >= startDate && candle.timestamp <= endDate
+            // SwiftData Predicate를 사용한 효율적인 쿼리
+            let predicate = #Predicate<CandleDataModel> { candle in
+                candle.market == market && 
+                candle.timestamp >= startDate && 
+                candle.timestamp <= endDate
             }
-            results.sort { $0.timestamp < $1.timestamp }
             
-            print("📊 [FETCH] Retrieved \(results.count) candles")
+            let descriptor = FetchDescriptor<CandleDataModel>(
+                predicate: predicate,
+                sortBy: [SortDescriptor(\CandleDataModel.timestamp, order: .forward)]
+            )
+            
+            let results = try context.fetch(descriptor)
+            
+            print("📊 [FETCH] Retrieved \(results.count) candles using optimized query")
             return results
             
         } catch {
@@ -516,16 +425,22 @@ class BacktestDataService: ObservableObject {
         }
     }
     
+    @MainActor
     func getDataCount(for market: String) async -> Int {
         guard let container = modelContainer else { return 0 }
         
         do {
             let context = ModelContext(container)
             
-            let allCandles = try context.fetch(FetchDescriptor<CandleDataModel>())
-            let filteredCandles = allCandles.filter { $0.market == market }
+            // SwiftData Predicate를 사용한 효율적인 COUNT 쿼리
+            let predicate = #Predicate<CandleDataModel> { candle in
+                candle.market == market
+            }
             
-            return filteredCandles.count
+            let descriptor = FetchDescriptor<CandleDataModel>(predicate: predicate)
+            let results = try context.fetch(descriptor)
+            
+            return results.count
             
         } catch {
             print("❌ [ERROR] Failed to count data: \(error)")
@@ -552,15 +467,25 @@ class BacktestDataService: ObservableObject {
     }
     
     /// 특정 마켓의 마지막 데이터 시점 조회 (이어받기용)
+    @MainActor
     func getLastDataTimestamp(for market: String) async -> Date? {
         guard let container = modelContainer else { return nil }
         
         do {
             let context = ModelContext(container)
-            let allCandles = try context.fetch(FetchDescriptor<CandleDataModel>())
-            let marketCandles = allCandles.filter { $0.market == market }
             
-            if let lastCandle = marketCandles.max(by: { $0.timestamp < $1.timestamp }) {
+            // SwiftData Predicate로 해당 마켓만 조회하고 timestamp 역순 정렬로 최신 1개만 가져오기
+            let predicate = #Predicate<CandleDataModel> { candle in
+                candle.market == market
+            }
+            
+            var descriptor = FetchDescriptor<CandleDataModel>(predicate: predicate)
+            descriptor.sortBy = [SortDescriptor(\.timestamp, order: .reverse)]
+            descriptor.fetchLimit = 1
+            
+            let results = try context.fetch(descriptor)
+            
+            if let lastCandle = results.first {
                 print("📅 [LAST] Last data for \(market): \(lastCandle.timestamp)")
                 return lastCandle.timestamp
             }
@@ -573,15 +498,25 @@ class BacktestDataService: ObservableObject {
     }
     
     /// 특정 마켓의 최초 데이터 시점 조회
+    @MainActor
     func getFirstDataTimestamp(for market: String) async -> Date? {
         guard let container = modelContainer else { return nil }
         
         do {
             let context = ModelContext(container)
-            let allCandles = try context.fetch(FetchDescriptor<CandleDataModel>())
-            let marketCandles = allCandles.filter { $0.market == market }
             
-            if let firstCandle = marketCandles.min(by: { $0.timestamp < $1.timestamp }) {
+            // SwiftData Predicate로 해당 마켓만 조회하고 timestamp 정순 정렬로 가장 오래된 1개만 가져오기
+            let predicate = #Predicate<CandleDataModel> { candle in
+                candle.market == market
+            }
+            
+            var descriptor = FetchDescriptor<CandleDataModel>(predicate: predicate)
+            descriptor.sortBy = [SortDescriptor(\.timestamp, order: .forward)]
+            descriptor.fetchLimit = 1
+            
+            let results = try context.fetch(descriptor)
+            
+            if let firstCandle = results.first {
                 print("📅 [FIRST] First data for \(market): \(firstCandle.timestamp)")
                 return firstCandle.timestamp
             }
@@ -600,13 +535,20 @@ class BacktestDataService: ObservableObject {
     }
     
     /// 특정 마켓의 모든 데이터 삭제
+    @MainActor
     func deleteAllData(for market: String) async -> Bool {
         guard let container = modelContainer else { return false }
         
         do {
             let context = ModelContext(container)
-            let allCandles = try context.fetch(FetchDescriptor<CandleDataModel>())
-            let marketCandles = allCandles.filter { $0.market == market }
+            
+            // SwiftData Predicate를 사용한 효율적인 삭제
+            let predicate = #Predicate<CandleDataModel> { candle in
+                candle.market == market
+            }
+            
+            let descriptor = FetchDescriptor<CandleDataModel>(predicate: predicate)
+            let marketCandles = try context.fetch(descriptor)
             
             for candle in marketCandles {
                 context.delete(candle)
@@ -624,17 +566,22 @@ class BacktestDataService: ObservableObject {
     }
     
     /// 특정 마켓의 날짜 범위 데이터 삭제
+    @MainActor
     func deleteData(for market: String, from startDate: Date, to endDate: Date) async -> Bool {
         guard let container = modelContainer else { return false }
         
         do {
             let context = ModelContext(container)
-            let allCandles = try context.fetch(FetchDescriptor<CandleDataModel>())
-            let targetCandles = allCandles.filter { candle in
+            
+            // SwiftData Predicate를 사용한 효율적인 범위 삭제
+            let predicate = #Predicate<CandleDataModel> { candle in
                 candle.market == market &&
                 candle.timestamp >= startDate &&
                 candle.timestamp <= endDate
             }
+            
+            let descriptor = FetchDescriptor<CandleDataModel>(predicate: predicate)
+            let targetCandles = try context.fetch(descriptor)
             
             for candle in targetCandles {
                 context.delete(candle)
@@ -675,16 +622,23 @@ class BacktestDataService: ObservableObject {
     }
     
     /// 특정 개수만큼 오래된 데이터 삭제
+    @MainActor
     func deleteOldestData(for market: String, count: Int) async -> Bool {
         guard let container = modelContainer else { return false }
         
         do {
             let context = ModelContext(container)
-            let allCandles = try context.fetch(FetchDescriptor<CandleDataModel>())
-            let marketCandles = allCandles.filter { $0.market == market }
-                .sorted { $0.timestamp < $1.timestamp }
             
-            let candlesToDelete = Array(marketCandles.prefix(count))
+            // SwiftData Predicate와 정렬, 제한을 사용한 효율적인 쿼리
+            let predicate = #Predicate<CandleDataModel> { candle in
+                candle.market == market
+            }
+            
+            var descriptor = FetchDescriptor<CandleDataModel>(predicate: predicate)
+            descriptor.sortBy = [SortDescriptor(\.timestamp, order: .forward)]
+            descriptor.fetchLimit = count
+            
+            let candlesToDelete = try context.fetch(descriptor)
             
             for candle in candlesToDelete {
                 context.delete(candle)

@@ -10,9 +10,8 @@ import SwiftData
 
 /// 백테스팅용 1분봉 캔들 데이터 모델
 @Model
-@preconcurrency
-class CandleDataModel {
-    var id: String = ""
+final class CandleDataModel: @unchecked Sendable {
+    @Attribute(.unique) var id: String = ""
     var market: String = ""
     var timestamp: Date = Date()
     var openPrice: Double = 0.0
@@ -81,4 +80,6 @@ struct CandleResponse: @preconcurrency Codable, Sendable {
             accTradePrice: candleAccTradePrice
         )
     }
+    
+    
 }
